@@ -996,18 +996,29 @@ class WebcamSource:
                 backoff = min(backoff * 2, self.max_backoff_s)
                 continue
             self._cap = cap
-            backoff = 1.0
-            self.consecutive_failures = 0
+            # NOTE: the counters are NOT reset here. A device that opens but
+            # never streams would otherwise reset them on every reconnect, so
+            # consecutive_failures could never exceed 1 and the read-failure
+            # path would busy-loop with no backoff — a permanently broken
+            # camera reporting itself healthy. Reset only once a frame has
+            # actually been delivered.
             while not self._stopped:
                 ok, image = cap.read()
                 if not ok:
-                    log.warning("camera %s read failed, reconnecting", self.device)
                     self.consecutive_failures += 1
+                    log.warning(
+                        "camera %s read failed, reconnecting in %.1fs",
+                        self.device, backoff,
+                    )
+                    self._sleep(backoff)
+                    backoff = min(backoff * 2, self.max_backoff_s)
                     break
                 yield Frame(
                     image=image, ts=self.now(), seq=seq, source_id=self.source_id
                 )
                 seq += 1
+                backoff = 1.0
+                self.consecutive_failures = 0
             cap.release()
             self._cap = None
 
@@ -1518,8 +1529,14 @@ class PersonDetector:
 
     def _label(self, box: PersonBox) -> str:
         if self.crib_zone is None:
-            return "adult"
+            # NOT "adult": that would make adult_present permanently active,
+            # and adult presence suppresses every non-health alert — a monitor
+            # that runs, looks healthy and says nothing. "unknown" advances
+            # nothing in the rule engine, so the lost-track watchdog fires.
+            # UNKNOWN is not SAFE.
+            return "unknown"
         in_crib = self.crib_zone.contains(box.center)
+        # Inclusive: a box exactly at baby_max_area is the baby.
         return "baby" if in_crib and box.area <= self.baby_max_area else "adult"
 
     def process(self, frame: Frame) -> list[Observation]:
@@ -1576,15 +1593,17 @@ from babymon.rules.state import EvidenceStateMachine
 
 
 def machine(**overrides) -> EvidenceStateMachine:
-    cfg = EventRuleConfig(
+    # Merge before unpacking: passing a default explicitly AND through
+    # **overrides raises TypeError on any call that overrides it.
+    settings = dict(
         enter_threshold=0.5,
         exit_threshold=0.2,
         min_duration_s=2.0,
         exit_duration_s=3.0,
         cooldown_s=0.0,
-        **overrides,
     )
-    return EvidenceStateMachine(name="test", config=cfg)
+    settings.update(overrides)
+    return EvidenceStateMachine(name="test", config=EventRuleConfig(**settings))
 
 
 def test_does_not_enter_before_the_minimum_duration():
@@ -1931,6 +1950,16 @@ from babymon.events import (
 from babymon.rules.state import EvidenceStateMachine
 from babymon.rules.zones import Zone
 
+def _started_at(machine: EvidenceStateMachine, fallback: float) -> float:
+    """When the episode began, not when the transition fired.
+
+    Explicitly `is not None`: ``entered_at or fallback`` silently discards a
+    legitimate 0.0, which is exactly the case every replay of a recording
+    starts with.
+    """
+    return machine.entered_at if machine.entered_at is not None else fallback
+
+
 SEVERITY = {
     AlertType.AWAKE: Severity.INFO,
     AlertType.CRYING: Severity.INFO,
@@ -2017,7 +2046,7 @@ class RuleEngine:
             alerts.append(
                 self._alert(
                     AlertType.ZONE_EXIT,
-                    self._zone_exit.entered_at or obs.ts,
+                    _started_at(self._zone_exit, obs.ts),
                     obs.confidence,
                     {"bbox": list(obs.bbox)},
                 )
@@ -2029,7 +2058,7 @@ class RuleEngine:
             return [
                 self._alert(
                     AlertType.AWAKE,
-                    self._awake.entered_at or obs.ts,
+                    _started_at(self._awake, obs.ts),
                     obs.confidence,
                     {"motion_energy": obs.value},
                 )
@@ -2242,7 +2271,11 @@ In `_handle_person`, immediately after `self.last_baby_seen = obs.ts`, add:
         alerts: list[Alert] = []
         alerts.extend(self._check_lost_track(now))
         alerts.extend(self._check_silent_detectors(now))
-        return alerts
+        # Through _allowed, exactly as handle() does. Health alerts pass
+        # regardless of adult presence, but the engine must have ONE
+        # suppression choke point, not two exits with one of them relying on
+        # every future tick alert happening to be a health type.
+        return [a for a in alerts if self._allowed(a)]
 
     def _check_lost_track(self, now: float) -> list[Alert]:
         if self._lost_track_reported:
@@ -3108,8 +3141,11 @@ def synthetic_session(tmp_path):
         img = np.zeros((240, 320, 3), dtype=np.uint8)
         second = i / FPS
         if 6.0 <= second < 10.0:
-            # A block oscillating inside the crib zone.
-            offset = 10 if (i // 2) % 2 == 0 else 40
+            # A block oscillating inside the crib zone. It must move on EVERY
+            # frame: a single still frame drops motion energy to zero, which
+            # resets the state machine's sustain clock and would stop the
+            # alert from ever firing.
+            offset = 10 + (i % 2) * 30
             img[100 : 100 + 40, offset + 120 : offset + 160] = 255
         frames.append(img)
     return write_video(tmp_path / "session.avi", frames, fps=FPS)
