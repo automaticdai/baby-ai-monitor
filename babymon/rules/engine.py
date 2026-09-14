@@ -46,15 +46,22 @@ SEVERITY = {
 
 class RuleEngine:
     def __init__(
-        self, config: RulesConfig, crib_zone: Zone | None = None
+        self,
+        config: RulesConfig,
+        crib_zone: Zone | None = None,
+        watched_detectors: tuple[str, ...] = (),
     ) -> None:
         self.config = config
         self.crib_zone = crib_zone
+        self.watched_detectors = watched_detectors
         self.last_baby_seen: float | None = None
         self.last_observation_ts: dict[str, float] = {}
         self._last_adult_seen: float | None = None
         self._adult_since: float | None = None
         self._adult_active = False
+        self._started_at: float | None = None
+        self._lost_track_reported = False
+        self._silent_reported: set[str] = set()
 
         self._awake = EvidenceStateMachine("awake", config.awake)
         self._zone_exit = EvidenceStateMachine("zone_exit", config.zone_exit)
@@ -108,6 +115,7 @@ class RuleEngine:
             return alerts
 
         self.last_baby_seen = obs.ts
+        self._lost_track_reported = False
 
         outside = (
             self.crib_zone is not None
@@ -159,5 +167,57 @@ class RuleEngine:
         return not self.adult_present
 
     def tick(self, now: float) -> list[Alert]:
-        """Time-driven checks. Filled in by the lost-track/watchdog task."""
-        return []
+        """Time-driven checks.
+
+        Absence of evidence is the failure mode that matters most: if the baby
+        cannot be located, or a detector has gone quiet, nothing else in the
+        system will fire and a naive monitor would report calm.
+        """
+        if self._started_at is None:
+            self._started_at = now
+        self._refresh_adult(now)
+        alerts: list[Alert] = []
+        alerts.extend(self._check_lost_track(now))
+        alerts.extend(self._check_silent_detectors(now))
+        return alerts
+
+    def _check_lost_track(self, now: float) -> list[Alert]:
+        if self._lost_track_reported:
+            return []
+        reference = (
+            self.last_baby_seen
+            if self.last_baby_seen is not None
+            else self._started_at
+        )
+        if reference is None or now - reference < self.config.lost_track_after_s:
+            return []
+        self._lost_track_reported = True
+        return [
+            self._alert(
+                AlertType.LOST_TRACK,
+                reference,
+                1.0,
+                {"seconds_since_last_seen": round(now - reference, 1)},
+            )
+        ]
+
+    def _check_silent_detectors(self, now: float) -> list[Alert]:
+        alerts: list[Alert] = []
+        for detector in self.watched_detectors:
+            last = self.last_observation_ts.get(detector, self._started_at)
+            silent = last is None or (
+                now - last >= self.config.detector_silent_after_s
+            )
+            if silent and detector not in self._silent_reported:
+                self._silent_reported.add(detector)
+                alerts.append(
+                    self._alert(
+                        AlertType.DETECTOR_SILENT,
+                        last if last is not None else now,
+                        1.0,
+                        {"detector": detector},
+                    )
+                )
+            elif not silent:
+                self._silent_reported.discard(detector)
+        return alerts
