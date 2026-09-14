@@ -1,0 +1,73 @@
+import numpy as np
+
+from babymon.detectors.person import PersonDetector
+from babymon.events import Frame
+from babymon.rules.zones import Zone
+
+CRIB = Zone(
+    name="crib", polygon=[(0.2, 0.2), (0.8, 0.2), (0.8, 0.8), (0.2, 0.8)]
+)
+
+
+class FakeModel:
+    """Stands in for YOLO so detector logic is tested without a model file."""
+
+    def __init__(self, detections):
+        self.detections = detections
+
+    def detect_persons(self, image):
+        return self.detections
+
+
+def frame() -> Frame:
+    return Frame(
+        image=np.zeros((100, 100, 3), dtype=np.uint8),
+        ts=1.0,
+        seq=0,
+        source_id="t",
+    )
+
+
+def detector(detections, **kwargs) -> PersonDetector:
+    return PersonDetector(model=FakeModel(detections), crib_zone=CRIB, **kwargs)
+
+
+def test_small_person_inside_the_crib_is_labelled_baby():
+    det = detector([((0.45, 0.45, 0.60, 0.60), 0.9)])
+    (obs,) = det.process(frame())
+    assert obs.label == "baby"
+    assert obs.detector == "person"
+
+
+def test_large_person_inside_the_crib_is_labelled_adult():
+    # Centre is inside the crib polygon but the box is far too big for a baby.
+    det = detector([((0.05, 0.05, 0.95, 0.95), 0.9)])
+    (obs,) = det.process(frame())
+    assert obs.label == "adult"
+
+
+def test_person_outside_the_crib_zone_is_labelled_adult():
+    det = detector([((0.02, 0.02, 0.12, 0.12), 0.9)])
+    (obs,) = det.process(frame())
+    assert obs.label == "adult"
+
+
+def test_low_confidence_detections_are_dropped():
+    det = detector([((0.45, 0.45, 0.60, 0.60), 0.2)], conf_threshold=0.4)
+    assert det.process(frame()) == []
+
+
+def test_without_a_crib_zone_everything_is_unknown_sized():
+    det = PersonDetector(
+        model=FakeModel([((0.45, 0.45, 0.60, 0.60), 0.9)]), crib_zone=None
+    )
+    (obs,) = det.process(frame())
+    assert obs.label == "adult"
+
+
+def test_multiple_detections_are_all_reported():
+    det = detector(
+        [((0.45, 0.45, 0.60, 0.60), 0.9), ((0.01, 0.01, 0.9, 0.99), 0.8)]
+    )
+    labels = sorted(o.label for o in det.process(frame()))
+    assert labels == ["adult", "baby"]
