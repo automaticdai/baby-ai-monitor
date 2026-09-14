@@ -11,6 +11,7 @@ import logging
 import sys
 
 from babymon.config import Config
+from babymon.events import Alert
 from babymon.detectors.motion import MotionDetector
 from babymon.detectors.person import PersonDetector, YoloPersonModel
 from babymon.rules.engine import RuleEngine
@@ -19,6 +20,35 @@ from babymon.runner import Pipeline, run_replay
 from babymon.sinks.store import SqliteStore
 from babymon.sources.file import FileVideoSource
 from babymon.sources.webcam import WebcamSource
+
+
+def format_alert(alert: Alert) -> str:
+    """One line per alert, for the replay listing.
+
+    The first column is when the CONDITION began, not when the alert fired.
+    For ``awake`` those are nearly the same; for ``lost_track`` they are not —
+    it began when the baby was last seen and fired a minute later. Printing
+    the bare number under an unlabelled column read as "the alert happened at
+    0.00s", which is wrong and alarming. The detail column carries the number
+    a person actually wants.
+    """
+    md = alert.metadata
+    if "seconds_since_last_seen" in md:
+        detail = f"baby not seen for {md['seconds_since_last_seen']}s"
+        if md.get("adult_present"):
+            detail += " (an adult is present)"
+    elif "detector" in md:
+        detail = f"detector {md['detector']!r} stopped reporting"
+    elif "motion_energy" in md:
+        detail = f"motion energy {md['motion_energy']:.3f}"
+    elif "reason" in md:
+        detail = str(md["reason"])
+    else:
+        detail = ""
+    return (
+        f"{alert.started_at:8.2f}s  {alert.severity.value:8}  "
+        f"{alert.type.value:16}  {detail}".rstrip()
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -100,8 +130,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.replay:
         alerts = run_replay(source, detectors, engine, [store])
+        if alerts:
+            print(f"{'began':>8}  {'severity':8}  {'event':16}  detail")
         for alert in alerts:
-            print(f"{alert.started_at:8.2f}s  {alert.severity.value:8}  {alert.type.value}")
+            print(format_alert(alert))
         store.close()
         return 0
 

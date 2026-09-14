@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from babymon import __main__ as cli
-from babymon.events import AlertType, Frame
+from babymon.events import Alert, AlertType, Frame, Severity
 
 
 def test_replay_without_a_file_source_fails_fast(monkeypatch, capsys):
@@ -117,3 +117,60 @@ def test_main_returns_zero_when_a_finite_source_reaches_eof(
 
     assert rc == 0
     assert AlertType.SOURCE_LOST not in [a.type for a in stub_store.alerts]
+
+
+def test_format_alert_explains_a_lost_track_rather_than_printing_a_bare_zero():
+    """The first column is when the condition began, which for lost_track is
+    when the baby was last seen — not when the alert fired. The detail column
+    must carry the number a person actually wants."""
+    alert = Alert(
+        type=AlertType.LOST_TRACK,
+        severity=Severity.CRITICAL,
+        started_at=0.0,
+        metadata={"seconds_since_last_seen": 60.0, "adult_present": False},
+    )
+    line = cli.format_alert(alert)
+    assert "lost_track" in line
+    assert "critical" in line
+    assert "baby not seen for 60.0s" in line
+
+
+def test_format_alert_notes_when_an_adult_is_present():
+    alert = Alert(
+        type=AlertType.LOST_TRACK,
+        severity=Severity.WARNING,
+        started_at=5.0,
+        metadata={"seconds_since_last_seen": 60.0, "adult_present": True},
+    )
+    assert "an adult is present" in cli.format_alert(alert)
+
+
+def test_format_alert_names_the_silent_detector():
+    alert = Alert(
+        type=AlertType.DETECTOR_SILENT,
+        severity=Severity.WARNING,
+        started_at=1.0,
+        metadata={"detector": "motion"},
+    )
+    assert "'motion' stopped reporting" in cli.format_alert(alert)
+
+
+def test_format_alert_reports_motion_energy_for_awake():
+    alert = Alert(
+        type=AlertType.AWAKE,
+        severity=Severity.INFO,
+        started_at=8.0,
+        metadata={"motion_energy": 0.0459},
+    )
+    line = cli.format_alert(alert)
+    assert line.startswith("    8.00s")
+    assert "motion energy 0.046" in line
+
+
+def test_format_alert_survives_empty_metadata():
+    alert = Alert(
+        type=AlertType.AWAKE, severity=Severity.INFO, started_at=2.0, metadata={}
+    )
+    line = cli.format_alert(alert)
+    assert "awake" in line
+    assert not line.endswith(" ")
