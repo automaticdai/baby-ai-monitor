@@ -2,21 +2,29 @@
 
 Attribution is a geometric heuristic, not a model: nothing off the shelf
 classifies "infant". A person box whose centre lies inside the crib zone and
-whose area is below a threshold is the baby; anything else is an adult.
+whose area is at or below a threshold is the baby; anything else is an adult.
 
 This holds for a fixed camera over a crib and breaks if the camera moves,
 which is why the rule engine watches for large shifts in scene geometry and
 warns rather than silently mis-attributing every later detection.
+
+If the crib zone is not configured, every person is reported as unknown, which
+prevents a misconfigured monitor from silently suppressing all alerts. The
+lost-track watchdog will fire to warn that attribution is unavailable.
 """
 
 from __future__ import annotations
 
+import logging
+from dataclasses import replace
 from typing import Protocol
 
 import numpy as np
 
 from babymon.events import BBox, Frame, Observation, PersonBox
 from babymon.rules.zones import Zone
+
+logger = logging.getLogger(__name__)
 
 
 class PersonModel(Protocol):
@@ -63,10 +71,15 @@ class PersonDetector:
         self.crib_zone = crib_zone
         self.conf_threshold = conf_threshold
         self.baby_max_area = baby_max_area
+        if self.crib_zone is None:
+            logger.warning(
+                "Baby/adult attribution disabled: crib zone not configured. "
+                "Every person will be reported as unknown."
+            )
 
     def _label(self, box: PersonBox) -> str:
         if self.crib_zone is None:
-            return "adult"
+            return "unknown"
         in_crib = self.crib_zone.contains(box.center)
         return "baby" if in_crib and box.area <= self.baby_max_area else "adult"
 
@@ -78,13 +91,5 @@ class PersonDetector:
             box = PersonBox(
                 ts=frame.ts, detector=self.name, confidence=conf, bbox=bbox
             )
-            out.append(
-                PersonBox(
-                    ts=box.ts,
-                    detector=box.detector,
-                    confidence=box.confidence,
-                    bbox=box.bbox,
-                    label=self._label(box),
-                )
-            )
+            out.append(replace(box, label=self._label(box)))
         return out

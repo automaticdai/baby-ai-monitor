@@ -57,12 +57,13 @@ def test_low_confidence_detections_are_dropped():
     assert det.process(frame()) == []
 
 
-def test_without_a_crib_zone_everything_is_unknown_sized():
+def test_without_a_crib_zone_people_are_unknown(caplog):
     det = PersonDetector(
         model=FakeModel([((0.45, 0.45, 0.60, 0.60), 0.9)]), crib_zone=None
     )
     (obs,) = det.process(frame())
-    assert obs.label == "adult"
+    assert obs.label == "unknown"
+    assert "Baby/adult attribution disabled" in caplog.text
 
 
 def test_multiple_detections_are_all_reported():
@@ -71,3 +72,19 @@ def test_multiple_detections_are_all_reported():
     )
     labels = sorted(o.label for o in det.process(frame()))
     assert labels == ["adult", "baby"]
+
+
+def test_person_at_exact_baby_max_area_boundary_is_baby():
+    # Box with area exactly equal to baby_max_area (0.25) and center inside crib
+    # is labeled baby. Dimensions: 0.5 x 0.5 = 0.25
+    det = detector([((0.25, 0.25, 0.75, 0.75), 0.9)])
+    (obs,) = det.process(frame())
+    assert obs.label == "baby"
+
+
+def test_person_above_baby_max_area_boundary_is_adult():
+    # Box with area above baby_max_area (0.26 > 0.25) and center inside crib
+    # is labeled adult. Dimensions: 0.52 x 0.5 = 0.26
+    det = detector([((0.24, 0.25, 0.76, 0.75), 0.9)])
+    (obs,) = det.process(frame())
+    assert obs.label == "adult"
