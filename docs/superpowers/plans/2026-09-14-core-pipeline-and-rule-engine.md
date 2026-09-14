@@ -3108,8 +3108,11 @@ def synthetic_session(tmp_path):
         img = np.zeros((240, 320, 3), dtype=np.uint8)
         second = i / FPS
         if 6.0 <= second < 10.0:
-            # A block oscillating inside the crib zone.
-            offset = 10 if (i // 2) % 2 == 0 else 40
+            # A block oscillating inside the crib zone. It must move on EVERY
+            # frame: a single still frame drops motion energy to zero, which
+            # resets the state machine's sustain clock and would stop the
+            # alert from ever firing.
+            offset = 10 + (i % 2) * 30
             img[100 : 100 + 40, offset + 120 : offset + 160] = 255
         frames.append(img)
     return write_video(tmp_path / "session.avi", frames, fps=FPS)
