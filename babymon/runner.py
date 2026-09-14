@@ -17,7 +17,7 @@ import numpy as np
 
 from babymon.bus import EventBus, ReorderBuffer
 from babymon.detectors.base import Detector
-from babymon.events import Alert, Frame
+from babymon.events import Alert, Frame, Heartbeat
 from babymon.rules.engine import RuleEngine
 from babymon.sinks.base import Sink
 from babymon.sources.base import FrameBuffer, VideoSource
@@ -56,6 +56,13 @@ class DetectorWorker:
         try:
             for obs in self.detector.process(frame):
                 self.bus.publish(obs)
+            # Published whatever process() returned, including nothing. The
+            # watchdog needs "this detector is still running" to be separable
+            # from "this detector had something to say" - otherwise a person
+            # detector watching an empty crib looks exactly like a dead one.
+            self.bus.publish(
+                Heartbeat(ts=frame.ts, detector=self.detector.name)
+            )
             self.failures = 0
         except Exception:
             self.failures += 1
@@ -193,6 +200,14 @@ def run_replay(
                 observations.extend(detector.process(frame))
             except Exception:
                 log.exception("detector %s failed during replay", detector.name)
+            else:
+                # Same liveness contract as DetectorWorker. Replay is the
+                # tuning path, so it has to reproduce what the live pipeline
+                # would have done - including not reporting a quiet detector
+                # as a dead one.
+                observations.append(
+                    Heartbeat(ts=frame.ts, detector=detector.name)
+                )
         frame_alerts: list[Alert] = []
         for obs in sorted(observations, key=lambda o: o.ts):
             frame_alerts.extend(engine.handle(obs))

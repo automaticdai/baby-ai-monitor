@@ -70,6 +70,28 @@ class CryProbability(Observation):
     value: float  # 0..1
 
 
+@dataclass(frozen=True)
+class Heartbeat(Observation):
+    """"I ran, and I saw nothing worth reporting."
+
+    Liveness has to be separable from output. A person detector publishes
+    nothing while the room is empty or dark, so an engine that infers
+    liveness from published observations cannot tell a healthy detector
+    watching an empty crib from one that has died - and it raises the same
+    alert for both. The alert that means "your monitor is broken" must not be
+    indistinguishable from routine night-time quiet.
+
+    A detector worker therefore publishes one of these after every successful
+    ``process()`` call, whatever that call returned. It carries no findings
+    and the rule engine dispatches on nothing, so its only effect is to
+    advance ``last_observation_ts``: DETECTOR_SILENT then means exactly "this
+    component stopped running", and LOST_TRACK remains the signal for "the
+    baby is not visible".
+    """
+
+    confidence: float = 1.0
+
+
 class Severity(str, Enum):
     INFO = "info"
     WARNING = "warning"

@@ -2,7 +2,7 @@ import numpy as np
 
 from babymon.bus import EventBus, Subscription
 from babymon.config import EventRuleConfig, RulesConfig
-from babymon.events import AlertType, Frame, MotionEnergy
+from babymon.events import AlertType, Frame, Heartbeat, MotionEnergy
 from babymon.rules.engine import RuleEngine
 from babymon.runner import DetectorWorker, Pipeline, run_replay
 from babymon.sources.base import FrameBuffer
@@ -62,6 +62,91 @@ def test_worker_publishes_observations():
     buf.put(frame(0))
     assert worker.run_once() is True
     assert sub.get(timeout=0.1).value == 0.9
+
+
+class SilentDetector:
+    """A healthy detector with nothing to report - a person detector watching
+    an empty crib, or any detector at all in a dark room."""
+
+    name = "person"
+
+    def __init__(self):
+        self.calls = 0
+
+    def process(self, frame):
+        self.calls += 1
+        return []
+
+
+def _watchdog_engine() -> RuleEngine:
+    return RuleEngine(
+        config=RulesConfig(
+            lost_track_after_s=1e9,  # not what these tests are about
+            detector_silent_after_s=15.0,
+        ),
+        watched_detectors=("person", "boom"),
+    )
+
+
+def test_a_worker_publishes_a_heartbeat_after_every_successful_frame():
+    buf, bus = FrameBuffer(), EventBus()
+    sub = bus.subscribe()
+    worker = DetectorWorker(CountingDetector(), buf, bus)
+    buf.put(frame(0))
+    worker.run_once()
+
+    assert sub.get(timeout=0.1).value == 0.9  # the observation itself
+    beat = sub.get(timeout=0.1)               # then the liveness signal
+    assert isinstance(beat, Heartbeat)
+    assert (beat.detector, beat.ts) == ("counter", 0.0)
+
+
+def test_a_detector_that_sees_nothing_is_not_reported_as_silent():
+    """The watchdog must distinguish "saw nothing" from "died".
+
+    PersonDetector publishes nothing while no person is in frame, so before
+    heartbeats a healthy detector looked dead after detector_silent_after_s
+    of an empty or dark scene - and raised the same alert a genuinely dead
+    one would.
+    """
+    buf, bus = FrameBuffer(), EventBus()
+    sub = bus.subscribe()
+    det = SilentDetector()
+    worker = DetectorWorker(det, buf, bus)
+    engine = _watchdog_engine()
+    engine.watched_detectors = ("person",)
+
+    for seq in (0, 10, 20, 30, 40):  # ts 0..40, far past the 15s threshold
+        buf.put(frame(seq))
+        assert worker.run_once() is True
+        beat = sub.get(timeout=0.1)
+        assert isinstance(beat, Heartbeat)
+        assert engine.handle(beat) == []  # carries no findings
+        assert engine.tick(now=beat.ts) == []
+
+    assert det.calls == 5
+    assert engine.last_observation_ts["person"] == 40.0
+
+
+def test_a_detector_whose_worker_has_stopped_is_reported_as_silent():
+    """The contrast case, under the identical engine config: a detector that
+    has failed out publishes no heartbeat, and the watchdog says so."""
+    buf, bus = FrameBuffer(), EventBus()
+    sub = bus.subscribe()
+    worker = DetectorWorker(ExplodingDetector(), buf, bus, max_failures=1)
+    engine = _watchdog_engine()
+    engine.watched_detectors = ("boom",)
+
+    engine.tick(now=0.0)
+    buf.put(frame(0))
+    worker.run_once()
+
+    assert not worker.healthy  # the run loop exits; nothing more is published
+    assert sub.get(timeout=0.05) is None  # no heartbeat on the failure path
+    assert engine.tick(now=10.0) == []
+    alerts = engine.tick(now=20.0)
+    assert [a.type for a in alerts] == [AlertType.DETECTOR_SILENT]
+    assert alerts[0].metadata["detector"] == "boom"
 
 
 def test_a_failing_detector_does_not_raise():
