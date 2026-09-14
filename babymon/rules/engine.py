@@ -159,10 +159,14 @@ class RuleEngine:
         started_at: float,
         confidence: float,
         metadata: dict,
+        severity: Severity | None = None,
     ) -> Alert:
+        """``severity`` overrides the static table for the rare alert whose
+        urgency depends on context. The table stays the default answer: an
+        override is a deliberate, local decision, not a second policy."""
         return Alert(
             type=type_,
-            severity=SEVERITY[type_],
+            severity=severity if severity is not None else SEVERITY[type_],
             started_at=started_at,
             confidence=confidence,
             metadata=metadata,
@@ -210,7 +214,21 @@ class RuleEngine:
                 AlertType.LOST_TRACK,
                 reference,
                 1.0,
-                {"seconds_since_last_seen": round(now - reference, 1)},
+                {
+                    "seconds_since_last_seen": round(now - reference, 1),
+                    "adult_present": self.adult_present,
+                },
+                # Attended-and-unseen is not alone-and-unseen. During a night
+                # feed the baby is in the caregiver's arms and not separately
+                # detected, so this fires every time - and a CRITICAL that
+                # cries wolf nightly is how a parent learns to ignore the one
+                # that matters. It stays unsuppressed either way: a monitor
+                # that cannot see must never be silent about it.
+                severity=(
+                    Severity.WARNING
+                    if self.adult_present
+                    else Severity.CRITICAL
+                ),
             )
         ]
 

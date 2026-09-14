@@ -103,6 +103,28 @@ def test_lost_track_bypasses_adult_suppression_but_ordinary_alerts_do_not():
     assert suppressed == []
 
 
+def test_lost_track_is_only_a_warning_while_an_adult_is_present():
+    # The night-feed case: the baby is in the caregiver's arms, so no baby
+    # box is detected and last_baby_seen stops advancing. The alert must
+    # still fire - the monitor genuinely cannot see the baby - but at
+    # WARNING, because someone is plainly there.
+    cfg = RulesConfig(
+        lost_track_after_s=30.0,
+        detector_silent_after_s=1e9,
+        adult_min_duration_s=0.0,
+        adult_hold_s=120.0,
+    )
+    eng = RuleEngine(config=cfg, crib_zone=CRIB)
+    eng.handle(baby(0.0))
+    eng.handle(adult(30.0))
+    assert eng.adult_present
+
+    alerts = eng.tick(now=31.0)
+    assert [a.type for a in alerts] == [AlertType.LOST_TRACK]
+    assert alerts[0].severity == Severity.WARNING
+    assert alerts[0].metadata["adult_present"] is True
+
+
 def test_a_silent_detector_raises_an_alert():
     eng = engine(watched_detectors=("motion",))
     eng.handle(
