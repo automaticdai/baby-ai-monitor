@@ -131,6 +131,10 @@ class Pipeline:
             if now >= next_tick:
                 self._dispatch(self.engine.tick(now))
                 next_tick = now + self.tick_interval_s
+        # A live stream always has something pending inside the reorder
+        # window at stop time; flush it through rather than dropping it.
+        for ready in reorder.flush():
+            self._dispatch(self.engine.handle(ready))
 
     def _dispatch(self, alerts: Iterable[Alert]) -> None:
         for alert in alerts:
@@ -189,10 +193,21 @@ def run_replay(
                 observations.extend(detector.process(frame))
             except Exception:
                 log.exception("detector %s failed during replay", detector.name)
+        frame_alerts: list[Alert] = []
         for obs in sorted(observations, key=lambda o: o.ts):
-            alerts.extend(engine.handle(obs))
-        alerts.extend(engine.tick(frame.ts))
-    for alert in alerts:
-        for sink in sinks:
-            sink.emit(alert, None)
+            frame_alerts.extend(engine.handle(obs))
+        frame_alerts.extend(engine.tick(frame.ts))
+        # Dispatch as each frame's alerts are produced, not after the whole
+        # replay finishes: that is what lets each alert carry its own
+        # frame's image as the snapshot, and what keeps one bad sink from
+        # losing the rest of an already-computed timeline.
+        for alert in frame_alerts:
+            for sink in sinks:
+                try:
+                    sink.emit(alert, frame.image)
+                except Exception:
+                    log.exception(
+                        "sink %s failed during replay", type(sink).__name__
+                    )
+        alerts.extend(frame_alerts)
     return alerts

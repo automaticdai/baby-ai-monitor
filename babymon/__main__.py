@@ -47,6 +47,14 @@ def main(argv: list[str] | None = None) -> int:
         cfg.source.kind = "file"
         cfg.source.path = args.source
 
+    if args.replay and cfg.source.kind != "file":
+        print(
+            "--replay requires a finite source; pass --source <path to a "
+            "video file> (or set source.kind: file in the config)",
+            file=sys.stderr,
+        )
+        return 1
+
     crib_cfg = cfg.zone("crib")
     crib = Zone.from_config(crib_cfg) if crib_cfg else None
     if crib is None:
