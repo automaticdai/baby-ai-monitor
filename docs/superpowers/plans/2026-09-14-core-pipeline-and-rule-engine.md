@@ -996,18 +996,29 @@ class WebcamSource:
                 backoff = min(backoff * 2, self.max_backoff_s)
                 continue
             self._cap = cap
-            backoff = 1.0
-            self.consecutive_failures = 0
+            # NOTE: the counters are NOT reset here. A device that opens but
+            # never streams would otherwise reset them on every reconnect, so
+            # consecutive_failures could never exceed 1 and the read-failure
+            # path would busy-loop with no backoff — a permanently broken
+            # camera reporting itself healthy. Reset only once a frame has
+            # actually been delivered.
             while not self._stopped:
                 ok, image = cap.read()
                 if not ok:
-                    log.warning("camera %s read failed, reconnecting", self.device)
                     self.consecutive_failures += 1
+                    log.warning(
+                        "camera %s read failed, reconnecting in %.1fs",
+                        self.device, backoff,
+                    )
+                    self._sleep(backoff)
+                    backoff = min(backoff * 2, self.max_backoff_s)
                     break
                 yield Frame(
                     image=image, ts=self.now(), seq=seq, source_id=self.source_id
                 )
                 seq += 1
+                backoff = 1.0
+                self.consecutive_failures = 0
             cap.release()
             self._cap = None
 
