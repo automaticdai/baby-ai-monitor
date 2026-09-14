@@ -189,14 +189,32 @@ class RuleEngine:
         if self._started_at is None:
             self._started_at = now
         self._refresh_adult(now)
-        alerts: list[Alert] = []
-        alerts.extend(self._check_lost_track(now))
-        alerts.extend(self._check_silent_detectors(now))
+        candidates: list[Alert] = []
+        candidates.extend(self._check_lost_track(now))
+        candidates.extend(self._check_silent_detectors(now))
         # Through _allowed, exactly as handle() does. Health alerts pass
         # regardless of adult presence, but the engine must have ONE
         # suppression choke point, not two exits with one of them relying on
         # every future tick alert happening to be a health type.
-        return [a for a in alerts if self._allowed(a)]
+        #
+        # Latching happens here, AFTER the filter, and never inside the
+        # checks: an alert that _allowed drops was never delivered, so
+        # marking it reported would suppress the retry and lose it for good.
+        # Inert while every tick alert is a health type - which is precisely
+        # why it has to be right before that stops being true.
+        allowed: list[Alert] = []
+        for alert in candidates:
+            if self._allowed(alert):
+                self._mark_reported(alert)
+                allowed.append(alert)
+        return allowed
+
+    def _mark_reported(self, alert: Alert) -> None:
+        """Record that a tick alert actually went out."""
+        if alert.type is AlertType.LOST_TRACK:
+            self._lost_track_reported = True
+        elif alert.type is AlertType.DETECTOR_SILENT:
+            self._silent_reported.add(alert.metadata["detector"])
 
     def _check_lost_track(self, now: float) -> list[Alert]:
         if self._lost_track_reported:
@@ -208,7 +226,6 @@ class RuleEngine:
         )
         if reference is None or now - reference < self.config.lost_track_after_s:
             return []
-        self._lost_track_reported = True
         return [
             self._alert(
                 AlertType.LOST_TRACK,
@@ -240,7 +257,6 @@ class RuleEngine:
                 now - last >= self.config.detector_silent_after_s
             )
             if silent and detector not in self._silent_reported:
-                self._silent_reported.add(detector)
                 alerts.append(
                     self._alert(
                         AlertType.DETECTOR_SILENT,

@@ -150,3 +150,35 @@ def test_a_recovered_detector_stops_alerting():
         MotionEnergy(ts=12.0, detector="motion", confidence=1.0, value=0.0)
     )
     assert eng.tick(now=13.0) == []
+
+
+def test_a_filtered_tick_alert_is_not_latched_and_is_retried():
+    """R31: latch only what actually went out.
+
+    Today every tick alert is a health type and _allowed passes them all, so
+    this is inert - which is exactly why it is worth pinning now. If a future
+    filter ever drops a tick alert, latching it as "reported" would suppress
+    every retry and lose the condition for good. _allowed is stubbed here to
+    stand in for that filter.
+    """
+    eng = engine()
+    eng.handle(baby(0.0))
+
+    eng._allowed = lambda alert: False
+    assert eng.tick(now=31.0) == []
+
+    del eng._allowed  # filter lifted; the condition still holds
+    alerts = eng.tick(now=32.0)
+    assert [a.type for a in alerts] == [AlertType.LOST_TRACK]
+
+
+def test_a_filtered_silent_detector_alert_is_not_latched_either():
+    eng = engine(watched_detectors=("motion",))
+    eng.tick(now=0.0)
+
+    eng._allowed = lambda alert: False
+    assert eng.tick(now=11.0) == []
+
+    del eng._allowed
+    alerts = eng.tick(now=12.0)
+    assert [a.type for a in alerts] == [AlertType.DETECTOR_SILENT]
