@@ -125,6 +125,29 @@ def test_lost_track_is_only_a_warning_while_an_adult_is_present():
     assert alerts[0].metadata["adult_present"] is True
 
 
+def test_lost_track_escalates_to_critical_once_the_adult_leaves():
+    cfg = RulesConfig(
+        lost_track_after_s=30.0,
+        detector_silent_after_s=1e9,
+        adult_min_duration_s=0.0,
+        adult_hold_s=5.0,
+        lost_track_realert_interval_s=10.0,
+    )
+    eng = RuleEngine(config=cfg, crib_zone=CRIB)
+    eng.handle(baby(0.0))
+    eng.handle(adult(30.0))
+    attended = eng.tick(now=31.0)
+    assert attended[0].severity == Severity.WARNING
+
+    # adult_hold_s expires, the baby is still not found, and the same
+    # condition now reads as alone-and-unseen.
+    alone = eng.tick(now=45.0)
+    assert not eng.adult_present
+    assert [a.type for a in alone] == [AlertType.LOST_TRACK]
+    assert alone[0].severity == Severity.CRITICAL
+    assert alone[0].metadata["adult_present"] is False
+
+
 def test_a_silent_detector_raises_an_alert():
     eng = engine(watched_detectors=("motion",))
     eng.handle(
@@ -182,3 +205,64 @@ def test_a_filtered_silent_detector_alert_is_not_latched_either():
     del eng._allowed
     alerts = eng.tick(now=12.0)
     assert [a.type for a in alerts] == [AlertType.DETECTOR_SILENT]
+
+
+def test_lost_track_repeats_once_the_realert_interval_has_passed():
+    """A blanket over the camera used to yield exactly one CRITICAL and then
+    silence all night. The condition persists, so the alert must too."""
+    cfg = RulesConfig(
+        lost_track_after_s=30.0,
+        detector_silent_after_s=1e9,
+        lost_track_realert_interval_s=300.0,
+    )
+    eng = RuleEngine(config=cfg, crib_zone=CRIB)
+    eng.handle(baby(0.0))
+
+    first = eng.tick(now=31.0)
+    assert [a.type for a in first] == [AlertType.LOST_TRACK]
+
+    # Still lost, but well inside the re-alert interval: stay quiet.
+    assert eng.tick(now=200.0) == []
+    assert eng.tick(now=330.0) == []
+
+    repeat = eng.tick(now=331.0)  # 300s after the first alert
+    assert [a.type for a in repeat] == [AlertType.LOST_TRACK]
+    assert repeat[0].metadata["seconds_since_last_seen"] == 331.0
+
+
+def test_a_silent_detector_repeats_once_the_realert_interval_has_passed():
+    cfg = RulesConfig(
+        lost_track_after_s=1e9,
+        detector_silent_after_s=10.0,
+        detector_silent_realert_interval_s=60.0,
+    )
+    eng = RuleEngine(config=cfg, crib_zone=CRIB, watched_detectors=("motion",))
+    eng.handle(
+        MotionEnergy(ts=0.0, detector="motion", confidence=1.0, value=0.0)
+    )
+
+    assert [a.type for a in eng.tick(now=11.0)] == [AlertType.DETECTOR_SILENT]
+    assert eng.tick(now=40.0) == []
+    assert eng.tick(now=70.0) == []
+    assert [a.type for a in eng.tick(now=71.0)] == [AlertType.DETECTOR_SILENT]
+
+
+def test_a_recovered_detector_re_arms_immediately_rather_than_waiting():
+    # Recovery clears the re-alert clock, so a second outage is reported at
+    # detector_silent_after_s and not one re-alert interval later.
+    cfg = RulesConfig(
+        lost_track_after_s=1e9,
+        detector_silent_after_s=10.0,
+        detector_silent_realert_interval_s=1e6,
+    )
+    eng = RuleEngine(config=cfg, crib_zone=CRIB, watched_detectors=("motion",))
+    eng.handle(
+        MotionEnergy(ts=0.0, detector="motion", confidence=1.0, value=0.0)
+    )
+    assert len(eng.tick(now=11.0)) == 1
+
+    eng.handle(
+        MotionEnergy(ts=12.0, detector="motion", confidence=1.0, value=0.0)
+    )
+    assert eng.tick(now=13.0) == []
+    assert [a.type for a in eng.tick(now=23.0)] == [AlertType.DETECTOR_SILENT]

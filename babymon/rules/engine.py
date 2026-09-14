@@ -60,8 +60,11 @@ class RuleEngine:
         self._adult_since: float | None = None
         self._adult_active = False
         self._started_at: float | None = None
-        self._lost_track_reported = False
-        self._silent_reported: set[str] = set()
+        # When each condition was last *reported*, not when it started.
+        # None means "not currently reported", which is also what a baby
+        # sighting or a detector recovering resets it to.
+        self._lost_track_reported_at: float | None = None
+        self._silent_reported_at: dict[str, float] = {}
 
         self._awake = EvidenceStateMachine("awake", config.awake)
         self._zone_exit = EvidenceStateMachine("zone_exit", config.zone_exit)
@@ -115,7 +118,7 @@ class RuleEngine:
             return alerts
 
         self.last_baby_seen = obs.ts
-        self._lost_track_reported = False
+        self._lost_track_reported_at = None
 
         # Unreachable from a real detector today, and deliberately kept.
         # PersonDetector only labels a box "baby" when its centre is inside
@@ -205,26 +208,39 @@ class RuleEngine:
         allowed: list[Alert] = []
         for alert in candidates:
             if self._allowed(alert):
-                self._mark_reported(alert)
+                self._mark_reported(alert, now)
                 allowed.append(alert)
         return allowed
 
-    def _mark_reported(self, alert: Alert) -> None:
-        """Record that a tick alert actually went out."""
+    def _mark_reported(self, alert: Alert, now: float) -> None:
+        """Record that a tick alert actually went out, and when."""
         if alert.type is AlertType.LOST_TRACK:
-            self._lost_track_reported = True
+            self._lost_track_reported_at = now
         elif alert.type is AlertType.DETECTOR_SILENT:
-            self._silent_reported.add(alert.metadata["detector"])
+            self._silent_reported_at[alert.metadata["detector"]] = now
+
+    @staticmethod
+    def _due(reported_at: float | None, now: float, interval: float) -> bool:
+        """Has this condition gone unreported for long enough to say it again?
+
+        A persisting failure re-alerts rather than latching: one missed
+        notification must not leave the monitor looking calm all night.
+        """
+        return reported_at is None or now - reported_at >= interval
 
     def _check_lost_track(self, now: float) -> list[Alert]:
-        if self._lost_track_reported:
-            return []
         reference = (
             self.last_baby_seen
             if self.last_baby_seen is not None
             else self._started_at
         )
         if reference is None or now - reference < self.config.lost_track_after_s:
+            return []
+        if not self._due(
+            self._lost_track_reported_at,
+            now,
+            self.config.lost_track_realert_interval_s,
+        ):
             return []
         return [
             self._alert(
@@ -256,15 +272,23 @@ class RuleEngine:
             silent = last is None or (
                 now - last >= self.config.detector_silent_after_s
             )
-            if silent and detector not in self._silent_reported:
-                alerts.append(
-                    self._alert(
-                        AlertType.DETECTOR_SILENT,
-                        last if last is not None else now,
-                        1.0,
-                        {"detector": detector},
-                    )
+            if not silent:
+                # Recovered: re-arm so the next outage alerts immediately
+                # rather than waiting out a re-alert interval.
+                self._silent_reported_at.pop(detector, None)
+                continue
+            if not self._due(
+                self._silent_reported_at.get(detector),
+                now,
+                self.config.detector_silent_realert_interval_s,
+            ):
+                continue
+            alerts.append(
+                self._alert(
+                    AlertType.DETECTOR_SILENT,
+                    last if last is not None else now,
+                    1.0,
+                    {"detector": detector},
                 )
-            elif not silent:
-                self._silent_reported.discard(detector)
+            )
         return alerts

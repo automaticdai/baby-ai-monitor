@@ -78,6 +78,13 @@ class RulesConfig(BaseModel):
     adult_hold_s: float = 5.0
     lost_track_after_s: float = 60.0
     detector_silent_after_s: float = 15.0
+    # A health condition that persists must keep saying so. Latching on the
+    # first alert meant a blanket over the camera produced exactly one
+    # notification and then silence all night - and one missed notification
+    # left the monitor indistinguishable from calm. These are re-alert
+    # intervals, not cooldowns on an episode: the condition is still true.
+    lost_track_realert_interval_s: float = 300.0
+    detector_silent_realert_interval_s: float = 300.0
     reorder_window_s: float = 0.25
 
 

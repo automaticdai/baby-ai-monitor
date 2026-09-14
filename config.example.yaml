@@ -24,6 +24,12 @@ rules:
     cooldown_s: 120.0
   lost_track_after_s: 60.0
   detector_silent_after_s: 15.0
+  # How often a still-unresolved health condition says so again. These are
+  # not cooldowns on a finished episode: the condition is still true, and a
+  # monitor that alerts once and then goes quiet is indistinguishable from a
+  # calm night.
+  lost_track_realert_interval_s: 300.0
+  detector_silent_realert_interval_s: 300.0
 
 storage:
   db_path: data/events.db
