@@ -27,9 +27,11 @@ suppressed every other alert at precisely the moment something happened, and
 calling it ``baby`` would have dropped suppression whenever an adult stood far
 enough back.
 
-This all holds for a fixed camera over a crib and breaks if the camera moves,
-which is why the rule engine watches for large shifts in scene geometry and
-warns rather than silently mis-attributing every later detection.
+This all holds for a fixed camera over a crib and breaks if the camera moves.
+Nothing currently detects that: ``AlertType.CAMERA_MOVED`` is declared but no
+code emits it, so a knocked or re-aimed camera will silently mis-attribute
+every later detection. Until scene-geometry monitoring is implemented, the
+camera's framing is an unchecked assumption of this whole module.
 
 If the crib zone is not configured, every person is reported as unknown, which
 prevents a misconfigured monitor from silently suppressing all alerts. The
