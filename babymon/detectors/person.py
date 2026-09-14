@@ -1,10 +1,37 @@
 """Person detection plus baby/adult attribution.
 
 Attribution is a geometric heuristic, not a model: nothing off the shelf
-classifies "infant". A person box whose centre lies inside the crib zone and
-whose area is at or below a threshold is the baby; anything else is an adult.
+classifies "infant". Labelling is three-way, on **size first and position
+second**:
 
-This holds for a fixed camera over a crib and breaks if the camera moves,
+===========================================  ===========
+box                                          label
+===========================================  ===========
+area above ``baby_max_area``                 ``adult``
+area at or below it, centre inside the crib  ``baby``
+area at or below it, centre outside the crib ``unknown``
+===========================================  ===========
+
+Size comes first because a big box is an adult wherever it stands - leaning
+into the crib included, which is the case that has to suppress alerts.
+
+The small-outside case is genuinely ambiguous and is therefore not guessed at.
+It could be the baby who has climbed out, a pet, a sibling, or simply an adult
+far enough from the camera to fall under the area threshold (``baby_max_area``
+defaults to a quarter of the frame, so a person across the room easily does).
+Nothing in a single frame distinguishes them; telling them apart needs identity
+tracking across frames, which arrives with the pose work. Until then the
+detector says ``unknown`` rather than pretending.
+
+That choice is deliberately asymmetric in the safe direction. ``unknown``
+neither activates adult suppression nor refreshes ``last_baby_seen``, so a baby
+who leaves the crib stops being seen and the lost-track watchdog fires. Calling
+it ``adult`` instead - which is what this detector used to do - would have
+suppressed every other alert at precisely the moment something happened, and
+calling it ``baby`` would have dropped suppression whenever an adult stood far
+enough back.
+
+This all holds for a fixed camera over a crib and breaks if the camera moves,
 which is why the rule engine watches for large shifts in scene geometry and
 warns rather than silently mis-attributing every later detection.
 
@@ -80,8 +107,11 @@ class PersonDetector:
     def _label(self, box: PersonBox) -> str:
         if self.crib_zone is None:
             return "unknown"
-        in_crib = self.crib_zone.contains(box.center)
-        return "baby" if in_crib and box.area <= self.baby_max_area else "adult"
+        if box.area > self.baby_max_area:
+            return "adult"
+        if self.crib_zone.contains(box.center):
+            return "baby"
+        return "unknown"
 
     def process(self, frame: Frame) -> list[Observation]:
         out: list[Observation] = []

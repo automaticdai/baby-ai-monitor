@@ -117,6 +117,15 @@ class RuleEngine:
         self.last_baby_seen = obs.ts
         self._lost_track_reported = False
 
+        # Unreachable from a real detector today, and deliberately kept.
+        # PersonDetector only labels a box "baby" when its centre is inside
+        # the crib zone, so no live observation can arrive here with
+        # outside=True; the state machine below is exercised by synthetic
+        # observations in the tests. Deciding that a small box outside the
+        # crib IS the baby (rather than a pet, a sibling, or a distant adult)
+        # needs identity tracking across frames, which arrives with the pose
+        # work. Until then a departing baby surfaces as LOST_TRACK, and this
+        # path waits for the evidence that would make it trustworthy.
         outside = (
             self.crib_zone is not None
             and not self.crib_zone.contains(obs.center)

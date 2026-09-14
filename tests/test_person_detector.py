@@ -46,9 +46,26 @@ def test_large_person_inside_the_crib_is_labelled_adult():
     assert obs.label == "adult"
 
 
-def test_person_outside_the_crib_zone_is_labelled_adult():
+def test_small_person_outside_the_crib_zone_is_unknown():
+    # Small and outside the crib is genuinely ambiguous - the baby who
+    # climbed out, a pet, or an adult far enough away to fall under the area
+    # threshold all look like this. Labelling it "adult" (which this detector
+    # used to do) would activate suppression and silence the monitor exactly
+    # when a baby left the crib; "unknown" neither suppresses nor refreshes
+    # last_baby_seen, so the lost-track watchdog still fires.
     det = detector([((0.02, 0.02, 0.12, 0.12), 0.9)])
     (obs,) = det.process(frame())
+    assert obs.label == "unknown"
+
+
+def test_large_person_outside_the_crib_zone_is_still_adult():
+    # Size is checked before position: a big box is an adult wherever it
+    # stands. Centre (0.45, 0.15) is above the crib polygon's top edge (y=0.2)
+    # and the area is 0.27, over baby_max_area.
+    det = detector([((0.0, 0.0, 0.9, 0.3), 0.9)])
+    (obs,) = det.process(frame())
+    assert obs.center == (0.45, 0.15)
+    assert not CRIB.contains(obs.center)
     assert obs.label == "adult"
 
 

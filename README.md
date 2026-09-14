@@ -11,9 +11,15 @@ leaves it.
 
 ## Status
 
-Core pipeline and rule engine. Detects: baby awake (motion), baby out of the
-crib zone, adult present (suppresses other alerts), and — critically — loss of
-track and silent detectors.
+Core pipeline and rule engine. Detects: baby awake (motion), adult present
+(suppresses other alerts), and — critically — loss of track and silent
+detectors.
+
+Zone-exit detection is not implemented. Telling "the baby climbed out" apart
+from "a pet walked past" needs identity tracking across frames, which the
+current single-frame geometry cannot do. A baby who leaves the crib therefore
+stops being seen and surfaces as a lost-track alert rather than as a zone exit:
+less precise, but never silent.
 
 Pose-based prone/face-covered detection, cry detection, and the web dashboard
 are planned. See `docs/superpowers/specs/` and `docs/superpowers/plans/`.
