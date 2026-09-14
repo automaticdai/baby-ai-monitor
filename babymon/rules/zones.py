@@ -13,11 +13,18 @@ from babymon.config import ZoneConfig
 @dataclass(frozen=True)
 class Zone:
     name: str
-    polygon: list[tuple[float, float]]
+    polygon: tuple[tuple[float, float], ...]
+
+    def __post_init__(self) -> None:
+        """Coerce polygon to immutable tuple of tuples."""
+        if not isinstance(self.polygon, tuple):
+            object.__setattr__(
+                self, "polygon", tuple((float(x), float(y)) for x, y in self.polygon)
+            )
 
     @classmethod
     def from_config(cls, cfg: ZoneConfig) -> "Zone":
-        return cls(name=cfg.name, polygon=[tuple(p) for p in cfg.polygon])
+        return cls(name=cfg.name, polygon=cfg.polygon)
 
     def contains(self, point: tuple[float, float]) -> bool:
         """Ray-casting point-in-polygon.

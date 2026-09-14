@@ -38,3 +38,37 @@ def test_from_config():
     zone = Zone.from_config(ZoneConfig(name="crib", polygon=SQUARE))
     assert zone.name == "crib"
     assert zone.contains((0.5, 0.5))
+
+
+def test_polygon_coerced_to_tuple():
+    """Construction from list of tuples still works and contains behaves identically."""
+    zone_from_list = Zone(name="crib", polygon=SQUARE)
+    zone_from_tuple = Zone(name="crib", polygon=tuple(SQUARE))
+    assert zone_from_list.contains((0.5, 0.5))
+    assert zone_from_tuple.contains((0.5, 0.5))
+    # Both should evaluate equally
+    assert zone_from_list.contains((0.05, 0.5)) == zone_from_tuple.contains((0.05, 0.5))
+
+
+def test_polygon_cannot_be_mutated():
+    """The stored polygon is immutable — item assignment raises TypeError."""
+    zone = Zone(name="crib", polygon=SQUARE)
+    try:
+        zone.polygon[0] = (0.2, 0.2)
+        assert False, "Expected TypeError when mutating polygon"
+    except TypeError:
+        pass  # Expected
+
+
+def test_zone_is_hashable():
+    """hash(zone) works and equal zones hash equally."""
+    zone1 = Zone(name="crib", polygon=SQUARE)
+    zone2 = Zone(name="crib", polygon=tuple(SQUARE))
+    # Both should be hashable
+    hash1 = hash(zone1)
+    hash2 = hash(zone2)
+    # Equal zones should hash equally
+    assert hash1 == hash2
+    # Should work in sets and dicts
+    zone_set = {zone1, zone2}
+    assert len(zone_set) == 1  # Identical zones should deduplicate
