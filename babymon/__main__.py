@@ -42,10 +42,7 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    cfg = Config.load(args.config) if args.config else Config()
-    if args.source:
-        cfg.source.kind = "file"
-        cfg.source.path = args.source
+    cfg = Config.load(args.config, source=args.source)
 
     if args.replay and cfg.source.kind != "file":
         print(

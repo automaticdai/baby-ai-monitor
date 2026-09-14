@@ -111,8 +111,25 @@ class Config(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
 
     @classmethod
-    def load(cls, path: str | Path) -> "Config":
-        data = yaml.safe_load(Path(path).read_text()) or {}
+    def load(
+        cls, path: str | Path | None = None, *, source: str | None = None
+    ) -> "Config":
+        """Load configuration, applying the ``--source`` override BEFORE
+        validation.
+
+        Order matters. ``SourceConfig`` requires a path when the kind is
+        ``file``, so validating first would reject a config that the override
+        was about to make valid — the user writes ``kind: file`` in the config
+        and supplies the path on the command line, which is a reasonable thing
+        to do and used to fail. A config with no path and no override still
+        fails, as it should.
+        """
+        data = yaml.safe_load(Path(path).read_text()) or {} if path else {}
+        if source is not None:
+            merged = dict(data.get("source") or {})
+            merged["kind"] = "file"
+            merged["path"] = source
+            data["source"] = merged
         return cls(**data)
 
     def zone(self, name: str) -> ZoneConfig | None:
