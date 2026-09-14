@@ -6,8 +6,10 @@ An always-on camera will fill a disk, so retention is not optional.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable
 
@@ -15,6 +17,8 @@ import cv2
 import numpy as np
 
 from babymon.events import Alert
+
+logger = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -57,10 +61,25 @@ class SqliteStore:
         recorded_at = self.now()
         snapshot_path: str | None = None
         if snapshot is not None:
-            name = f"{int(recorded_at * 1000)}_{alert.type.value}.jpg"
+            # Add random suffix to ensure uniqueness even for same type at same millisecond
+            suffix = uuid.uuid4().hex[:8]
+            name = f"{int(recorded_at * 1000)}_{alert.type.value}_{suffix}.jpg"
             path = self.snapshot_dir / name
-            cv2.imwrite(str(path), snapshot)
-            snapshot_path = str(path)
+            if not cv2.imwrite(str(path), snapshot):
+                logger.error(f"Failed to write snapshot file: {path}")
+                snapshot_path = None
+            else:
+                snapshot_path = str(path)
+
+        # Safely serialize metadata, catching non-JSON-serializable values
+        try:
+            metadata_json = json.dumps(alert.metadata)
+        except TypeError as e:
+            logger.error(f"Metadata not serialisable for alert {alert.type.value}: {e}")
+            metadata_json = json.dumps({
+                "_error": "metadata not serialisable",
+                "_repr": repr(alert.metadata)[:500]
+            })
 
         cur = self._conn.execute(
             "INSERT INTO events (type, severity, started_at, ended_at, "
@@ -74,7 +93,7 @@ class SqliteStore:
                 recorded_at,
                 alert.confidence,
                 snapshot_path,
-                json.dumps(alert.metadata),
+                metadata_json,
             ),
         )
         self._conn.commit()

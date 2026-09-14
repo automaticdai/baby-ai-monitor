@@ -3,6 +3,7 @@ import pytest
 
 from babymon.events import Alert, AlertType, Severity
 from babymon.sinks.store import SqliteStore
+from unittest.mock import patch
 
 
 @pytest.fixture
@@ -88,3 +89,76 @@ def test_sweep_keeps_rows_inside_retention(store):
     store.emit(alert())
     assert store.sweep() == 0
     assert len(store.recent()) == 1
+
+
+def test_imwrite_failure_logs_error_and_leaves_snapshot_path_none(store, caplog):
+    """Finding 1: cv2.imwrite can fail silently; we must check its return value."""
+    with patch("babymon.sinks.store.cv2.imwrite", return_value=False):
+        row_id = store.emit(alert(), snapshot=image())
+
+    # Alert row must be inserted despite snapshot write failure
+    rows = store.recent()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["id"] == row_id
+    assert row["type"] == "awake"
+
+    # snapshot_path should be None, not pointing to a nonexistent file
+    assert row["snapshot_path"] is None
+
+    # Error must be logged
+    assert "Failed to write snapshot file" in caplog.text
+
+
+def test_same_type_same_time_different_snapshots(store):
+    """Finding 2: Multiple alerts of same type at same millisecond must have unique files."""
+    # Emit two alerts of the same type at the same clock reading, both with snapshots
+    row_id_1 = store.emit(alert(AlertType.AWAKE, started_at=1.0), snapshot=image())
+    row_id_2 = store.emit(alert(AlertType.AWAKE, started_at=2.0), snapshot=image())
+
+    rows = store.recent(limit=2)
+    assert len(rows) == 2
+
+    path_1 = rows[1]["snapshot_path"]  # Oldest first after DESC order
+    path_2 = rows[0]["snapshot_path"]  # Newest
+
+    # Paths must be different (random suffix ensures uniqueness)
+    assert path_1 is not None
+    assert path_2 is not None
+    assert path_1 != path_2
+
+    # Both files must exist
+    from pathlib import Path
+    assert Path(path_1).exists()
+    assert Path(path_2).exists()
+
+
+def test_unserialisable_metadata_logs_error_and_persists_alert(store, caplog):
+    """Finding 3: Metadata might not be JSON-serializable; we must still persist the alert."""
+    # Create an alert with unserialisable metadata (a set)
+    bad_alert = Alert(
+        type=AlertType.AWAKE,
+        severity=Severity.CRITICAL,
+        started_at=1.0,
+        confidence=0.9,
+        metadata={"unserializable": {1, 2, 3}},  # Sets are not JSON-serializable
+    )
+
+    # emit() must succeed and insert the alert row
+    row_id = store.emit(bad_alert)
+
+    # Alert row must be present
+    rows = store.recent()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["id"] == row_id
+    assert row["type"] == "awake"
+    assert row["severity"] == "critical"
+
+    # Metadata should record the error, not lose the alert
+    assert "_error" in row["metadata"]
+    assert row["metadata"]["_error"] == "metadata not serialisable"
+    assert "_repr" in row["metadata"]
+
+    # Error must be logged
+    assert "Metadata not serialisable" in caplog.text
