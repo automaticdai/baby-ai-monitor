@@ -32,6 +32,10 @@ def adult(ts):
     )
 
 
+def motion(ts, value):
+    return MotionEnergy(ts=ts, detector="motion", confidence=1.0, value=value)
+
+
 def test_lost_track_alert_after_the_threshold():
     eng = engine()
     eng.handle(baby(0.0))
@@ -57,12 +61,46 @@ def test_seeing_the_baby_again_clears_and_re_arms_lost_track():
     assert [a.type for a in eng.tick(now=75.0)] == [AlertType.LOST_TRACK]
 
 
-def test_lost_track_is_not_suppressed_by_an_adult_being_present():
+def test_lost_track_still_fires_after_an_earlier_adult_sighting_has_expired():
+    # Not a suppression test: by the time tick(now=31.0) runs, adult_hold_s
+    # (1.0s here) has long since decayed adult_present back to False, so this
+    # only shows that a stale adult sighting does not block the alert.
+    # test_lost_track_bypasses_adult_suppression_but_ordinary_alerts_do_not
+    # below is the one that pins the bypass guarantee itself.
     eng = engine()
     eng.handle(baby(0.0))
     eng.handle(adult(1.0))
     assert eng.adult_present
     assert [a.type for a in eng.tick(now=31.0)] == [AlertType.LOST_TRACK]
+
+
+def test_lost_track_bypasses_adult_suppression_but_ordinary_alerts_do_not():
+    # adult_hold_s is long enough that adult_present is still True at the
+    # moment tick() runs the health checks - the earlier test above cannot
+    # show this because its adult presence has already decayed by then.
+    cfg = RulesConfig(
+        lost_track_after_s=30.0,
+        detector_silent_after_s=10.0,
+        adult_min_duration_s=0.0,
+        adult_hold_s=120.0,
+    )
+    eng = RuleEngine(config=cfg, crib_zone=CRIB)
+    eng.handle(baby(0.0))
+    eng.handle(adult(30.0))
+    assert eng.adult_present
+
+    alerts = eng.tick(now=31.0)
+    assert eng.adult_present  # still true at the moment tick ran, not just earlier
+    assert [a.type for a in alerts] == [AlertType.LOST_TRACK]
+
+    # Contrast: under the same adult-present conditions, an ordinary
+    # (non-health) alert IS suppressed - proving tick does not simply let
+    # everything through.
+    suppressed: list = []
+    for ts, value in [(31.5, 0.3), (32.5, 0.3), (34.0, 0.3)]:
+        suppressed.extend(eng.handle(motion(ts, value)))
+    assert eng.adult_present
+    assert suppressed == []
 
 
 def test_a_silent_detector_raises_an_alert():

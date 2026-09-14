@@ -179,7 +179,11 @@ class RuleEngine:
         alerts: list[Alert] = []
         alerts.extend(self._check_lost_track(now))
         alerts.extend(self._check_silent_detectors(now))
-        return alerts
+        # Through _allowed, exactly as handle() does. Health alerts pass
+        # regardless of adult presence, but the engine must have ONE
+        # suppression choke point, not two exits with one of them relying on
+        # every future tick alert happening to be a health type.
+        return [a for a in alerts if self._allowed(a)]
 
     def _check_lost_track(self, now: float) -> list[Alert]:
         if self._lost_track_reported:
