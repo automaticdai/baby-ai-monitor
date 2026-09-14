@@ -5,7 +5,9 @@ from babymon.events import (
     Alert,
     AlertType,
     Frame,
+    Heartbeat,
     MotionEnergy,
+    Observation,
     PersonBox,
     Severity,
 )
@@ -43,3 +45,14 @@ def test_alert_defaults_to_an_open_ended_episode():
     assert alert.ended_at is None
     assert alert.metadata == {}
     assert alert.confidence == 1.0
+
+
+def test_heartbeat_is_an_observation_carrying_only_liveness():
+    beat = Heartbeat(ts=3.0, detector="person")
+    assert isinstance(beat, Observation)
+    assert (beat.detector, beat.ts, beat.confidence) == ("person", 3.0, 1.0)
+    # No findings of any kind: a heartbeat says the detector ran, nothing
+    # about what it saw. Anything else would make it a second, silent channel
+    # for detection results.
+    assert not isinstance(beat, (PersonBox, MotionEnergy))
+    assert set(vars(beat)) == {"ts", "detector", "confidence"}

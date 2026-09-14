@@ -4,13 +4,9 @@ Attribution is a geometric heuristic, not a model: nothing off the shelf
 classifies "infant". Labelling is three-way, on **size first and position
 second**:
 
-===========================================  ===========
-box                                          label
-===========================================  ===========
-area above ``baby_max_area``                 ``adult``
-area at or below it, centre inside the crib  ``baby``
-area at or below it, centre outside the crib ``unknown``
-===========================================  ===========
+* area above ``baby_max_area``                     -> ``adult``
+* area at or below it, centre inside the crib zone -> ``baby``
+* area at or below it, centre outside it           -> ``unknown``
 
 Size comes first because a big box is an adult wherever it stands - leaning
 into the crib included, which is the case that has to suppress alerts.

@@ -72,7 +72,7 @@ class CryProbability(Observation):
 
 @dataclass(frozen=True)
 class Heartbeat(Observation):
-    """"I ran, and I saw nothing worth reporting."
+    """A detector saying "I ran", with nothing else to report.
 
     Liveness has to be separable from output. A person detector publishes
     nothing while the room is empty or dark, so an engine that infers
