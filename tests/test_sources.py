@@ -1,3 +1,5 @@
+import time
+
 import numpy as np
 import pytest
 
@@ -56,6 +58,60 @@ def test_replaying_the_same_file_gives_identical_timestamps(still_video):
     a = [f.ts for f in FileVideoSource(still_video, realtime=False).frames()]
     b = [f.ts for f in FileVideoSource(still_video, realtime=False).frames()]
     assert a == b
+
+
+def test_realtime_file_source_defaults_to_the_monotonic_clock(still_video):
+    """The clock-domain bug: `--source clip.mp4` without `--replay`.
+
+    Pipeline ticks the rule engine with time.monotonic (~10^5 on any machine
+    that has been up a while). A file source stamping frames from 0.0 put
+    every observation ~10^5 seconds in the engine's past, so the lost-track
+    watchdog fired on the first tick and reported the machine's uptime as
+    seconds-since-last-seen.
+    """
+    before = time.monotonic()
+    src = FileVideoSource(still_video, realtime=True)
+    after = time.monotonic()
+    assert before <= src.start_ts <= after
+
+    gen = src.frames()
+    try:
+        first = next(gen)
+    finally:
+        gen.close()
+        src.close()
+    assert first.ts == pytest.approx(src.start_ts)
+
+
+def test_realtime_file_source_uses_the_injected_clock(still_video):
+    src = FileVideoSource(still_video, realtime=True, now=lambda: 12345.0)
+    assert src.start_ts == 12345.0
+
+    gen = src.frames()
+    try:
+        # Only the first frame: with a frozen clock later frames would sleep
+        # out their real inter-frame interval.
+        first = next(gen)
+    finally:
+        gen.close()
+        src.close()
+    assert first.ts == pytest.approx(12345.0)
+
+
+def test_replay_file_source_ignores_the_clock_and_starts_at_zero(still_video):
+    """Replay determinism must not depend on a clock at all, which is what
+    keeps the golden timeline reproducible."""
+    src = FileVideoSource(still_video, realtime=False, now=lambda: 12345.0)
+    assert src.start_ts == 0.0
+    assert [f.ts for f in src.frames()][0] == 0.0
+
+
+def test_an_explicit_start_ts_overrides_both_defaults(still_video):
+    realtime = FileVideoSource(
+        still_video, realtime=True, start_ts=7.0, now=lambda: 12345.0
+    )
+    replay = FileVideoSource(still_video, realtime=False, start_ts=7.0)
+    assert (realtime.start_ts, replay.start_ts) == (7.0, 7.0)
 
 
 class _AlwaysFailsToOpen:
