@@ -108,7 +108,10 @@ def main(argv: list[str] | None = None) -> int:
         store.close()
         return 0
 
-    Pipeline(
+    # The exit code is not decoration: a monitor that died because its
+    # source became unreadable must not report success, or a supervisor set
+    # to Restart=on-failure will leave the cot unwatched.
+    return Pipeline(
         source=source,
         detectors=detectors,
         engine=engine,
@@ -118,7 +121,6 @@ def main(argv: list[str] | None = None) -> int:
             "person": cfg.detectors.person_stride,
         },
     ).run()
-    return 0
 
 
 if __name__ == "__main__":

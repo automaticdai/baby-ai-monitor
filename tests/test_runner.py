@@ -2,7 +2,7 @@ import numpy as np
 
 from babymon.bus import EventBus, Subscription
 from babymon.config import EventRuleConfig, RulesConfig
-from babymon.events import AlertType, Frame, Heartbeat, MotionEnergy
+from babymon.events import AlertType, Frame, Heartbeat, MotionEnergy, Severity
 from babymon.rules.engine import RuleEngine
 from babymon.runner import DetectorWorker, Pipeline, run_replay
 from babymon.sources.base import FrameBuffer
@@ -336,3 +336,90 @@ def test_pipeline_consume_flushes_pending_observations_on_shutdown():
     # state-machine logic, so this proves the observation reached the engine
     # via flush() rather than being discarded with the reorder buffer.
     assert engine.last_observation_ts.get("motion") == 0.0
+
+
+class _DyingSource:
+    """Delivers a few frames, then the device goes away mid-stream."""
+
+    source_id = "cam0"
+
+    def __init__(self, frames_before_failure: int = 2) -> None:
+        self.frames_before_failure = frames_before_failure
+        self.closed = False
+
+    def frames(self):
+        for seq in range(self.frames_before_failure):
+            yield frame(seq)
+        raise RuntimeError("device disappeared")
+
+    def close(self):
+        self.closed = True
+
+
+def _idle_engine() -> RuleEngine:
+    # Nothing in these tests is about the watchdogs; only the source matters.
+    return RuleEngine(
+        config=RulesConfig(lost_track_after_s=1e9, detector_silent_after_s=1e9)
+    )
+
+
+def _pipeline(source, sink) -> Pipeline:
+    return Pipeline(
+        source=source,
+        detectors=[],
+        engine=_idle_engine(),
+        sinks=[sink],
+        tick_interval_s=1e9,
+    )
+
+
+def test_a_source_that_dies_mid_stream_emits_source_lost_and_exits_non_zero():
+    """_capture's finally-block sets stop_event on ANY exit, so an
+    unreadable source used to stop the monitor while the process still
+    reported success - and a supervisor set to Restart=on-failure would not
+    have restarted it. AlertType.SOURCE_LOST existed for exactly this case
+    and was emitted nowhere."""
+    sink = ListSink()
+    pipeline = _pipeline(_DyingSource(), sink)
+
+    assert pipeline.run() == 1
+    assert pipeline.exit_reason == "error"
+    assert isinstance(pipeline.capture_error, RuntimeError)
+
+    assert [a.type for a in sink.alerts] == [AlertType.SOURCE_LOST]
+    assert sink.alerts[0].severity == Severity.CRITICAL
+    assert sink.alerts[0].metadata["source_id"] == "cam0"
+    assert "device disappeared" in sink.alerts[0].metadata["error"]
+
+
+def test_a_finite_source_reaching_eof_exits_zero_and_says_nothing():
+    sink = ListSink()
+    pipeline = _pipeline(_SixFrameSource(), sink)
+
+    assert pipeline.run() == 0
+    assert pipeline.exit_reason == "eof"
+    assert sink.alerts == []
+
+
+def test_a_source_raising_during_shutdown_is_not_a_failure():
+    """stop() closes the source underneath the capture loop, so a raise at
+    that point is the shutdown working, not the monitor dying."""
+
+    class _RaisesImmediately:
+        source_id = "cam0"
+
+        def frames(self):
+            raise RuntimeError("closed under us")
+            yield  # pragma: no cover - makes this a generator
+
+        def close(self):
+            pass
+
+    sink = ListSink()
+    pipeline = _pipeline(_RaisesImmediately(), sink)
+    pipeline.stop_event.set()  # shutdown already requested
+    pipeline._capture()
+
+    assert pipeline.exit_reason == "stopped"
+    assert pipeline.exit_code == 0
+    assert sink.alerts == []

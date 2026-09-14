@@ -17,8 +17,8 @@ import numpy as np
 
 from babymon.bus import EventBus, ReorderBuffer
 from babymon.detectors.base import Detector
-from babymon.events import Alert, Frame, Heartbeat
-from babymon.rules.engine import RuleEngine
+from babymon.events import Alert, AlertType, Frame, Heartbeat
+from babymon.rules.engine import SEVERITY, RuleEngine
 from babymon.sinks.base import Sink
 from babymon.sources.base import FrameBuffer, VideoSource
 
@@ -113,16 +113,64 @@ class Pipeline:
         ]
         self._latest_image: np.ndarray | None = None
         self._threads: list[threading.Thread] = []
+        #: Why capture ended. "running" until it does; then "eof" (a finite
+        #: source ran out), "stopped" (shutdown was asked for) or "error".
+        self.exit_reason = "running"
+        self.capture_error: BaseException | None = None
 
     def _capture(self) -> None:
+        """Capture frames, and record WHY the loop ended.
+
+        The finally-block below sets stop_event on any exit at all, including
+        an exception, so without this distinction an unreadable source stopped
+        the monitor and the process still reported success - a supervisor set
+        to Restart=on-failure would not have restarted it.
+        """
         try:
             for frame in self.source.frames():
                 if self.stop_event.is_set():
+                    self.exit_reason = "stopped"
                     return
                 self._latest_image = frame.image
                 self.buffer.put(frame)
+            self.exit_reason = "stopped" if self.stop_event.is_set() else "eof"
+        except Exception as exc:
+            if self.stop_event.is_set():
+                # stop() closes the source underneath this loop, so a raise
+                # here during a deliberate shutdown is expected, not a fault.
+                self.exit_reason = "stopped"
+                log.debug("source raised during shutdown", exc_info=True)
+            else:
+                self.exit_reason = "error"
+                self.capture_error = exc
+                log.exception("capture failed; the monitor is now blind")
+                self._dispatch([self._source_lost_alert(exc)])
         finally:
             self.stop_event.set()
+
+    def _source_lost_alert(self, exc: BaseException) -> Alert:
+        """The monitor can no longer see. AlertType.SOURCE_LOST exists for
+        exactly this, and had never been emitted anywhere."""
+        return Alert(
+            type=AlertType.SOURCE_LOST,
+            severity=SEVERITY[AlertType.SOURCE_LOST],
+            started_at=self.now(),
+            confidence=1.0,
+            metadata={
+                "source_id": getattr(self.source, "source_id", "unknown"),
+                "error": f"{type(exc).__name__}: {exc}",
+            },
+        )
+
+    @property
+    def exit_code(self) -> int:
+        """0 only when the monitor stopped for a reason someone chose.
+
+        A finite source reaching EOF is a clean finish, and so is an
+        explicit stop or Ctrl-C. Anything else means the monitor died and
+        must be restartable by a supervisor.
+        """
+        return 0 if self.exit_reason in ("eof", "stopped") else 1
 
     def _consume(self) -> None:
         sub = self.bus.subscribe()
@@ -152,7 +200,9 @@ class Pipeline:
                 except Exception:
                     log.exception("sink %s failed", type(sink).__name__)
 
-    def run(self) -> None:
+    def run(self) -> int:
+        """Run until the source ends or something stops us. Returns
+        ``exit_code`` so a caller can distinguish a finish from a failure."""
         self._threads = [
             threading.Thread(target=self._capture, name="capture", daemon=True),
             threading.Thread(target=self._consume, name="rules", daemon=True),
@@ -167,9 +217,10 @@ class Pipeline:
             while not self.stop_event.wait(timeout=0.5):
                 pass
         except KeyboardInterrupt:
-            pass
+            self.exit_reason = "stopped"
         finally:
             self.stop()
+        return self.exit_code
 
     def stop(self) -> None:
         self.stop_event.set()
